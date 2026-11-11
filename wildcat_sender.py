@@ -114,10 +114,11 @@ class wildcat_sender(threading.Thread):
             for i in range(self.window_size):
                 bitmap_byte = bitmap[i // 8]
                 bitmap_bit = (bitmap_byte >> (i % 8))
-                if 1 & bitmap_bit:
-                    cur_seq_num = (window_start + i) % 65536
+
+                if 1 & bitmap_bit: # if bitmap shows that this packet has been acked
+                    cur_seq_num = (window_start + i) % 65536 # find the seq_num
                     if cur_seq_num in self.buffer:
-                        self.buffer[cur_seq_num][2] = True
+                        self.buffer[cur_seq_num][2] = True # set it to true in the window
             
     
     def run(self):
@@ -126,6 +127,7 @@ class wildcat_sender(threading.Thread):
                 cur_time = time.time()
 
                 for seq_num, pkt_data in self.buffer.items():
+                    
                     pkt = pkt_data[0]
                     expiration = pkt_data[1]
                     acked = pkt_data[2]

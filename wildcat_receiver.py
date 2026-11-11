@@ -20,12 +20,12 @@ class wildcat_receiver(threading.Thread):
         self.my_logger = my_logger
         self.die = False
         self.lock = threading.Lock()
+
         # needs a buffer to store and reassemble out of order packets
         self.buffer = {}
         self.base = 0
         self.maxx = 65536
         
-        # add as needed
 
     def receive(self, packet_byte_array):
         pkt = packet_byte_array
@@ -43,7 +43,7 @@ class wildcat_receiver(threading.Thread):
         seq = (body[0] << 8) | body[1]
         payload = body[2:]
         #some lock
-        with self.lock():
+        with self.lock:
             offset = (seq - self.base) % self.maxx
             if offset < self.window_size:
                 if seq not in self.buffer:
@@ -53,33 +53,26 @@ class wildcat_receiver(threading.Thread):
             while self.base in self.buffer:
                 payload = self.buffer.pop(self.base)
                 self.my_logger.commit(payload)
-                self.base+=1
+                self.base = (self.base + 1) % self.maxx
             
             #ack packet building
             window_start = bytearray([self.base >> 8, self.base & 0xFF])
             bitmap = bytearray((self.window_size + 7) // 8)
             #bitmapping, set to 1 if in received else 0
             for i in range(0, self.window_size):
-                if (self.base+i)% self.maxx in self.buffer:
-                    bitmap[i] |= (i // 8) | 1 << (i % 8)
-            
+                if ((self.base+i) % self.maxx) in self.buffer:
+                    bitmap[i // 8] |= 1 << (i % 8)
+                                
             ack_body = window_start + bitmap 
             ack_checksum = checksum(ack_body)
             ack = ack_body + bytearray([ack_checksum >> 8, ack_checksum & 0xFF])
+            self.my_tunnel.magic_send(bytearray(ack))
 
-
-        self.my_tunnel.magic_send(bytearray(ack))
-
-        # #echo
-        # print("Receiver gotten:", packet_byte_array)
-        # # self.my_logger.commit(packet_byte_array)
-        # self.my_tunnel.magic_send(packet_byte_array)
         
 
     def run(self):
         while not self.die:
             time.sleep(0.01)
-            # TODO: your implementation comes here
             
     def join(self):
         self.die = True
