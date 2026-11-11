@@ -29,7 +29,7 @@ class wildcat_sender(threading.Thread):
         self.lock = threading.Lock()
 
         # packets in flight that aren't confirmed yet: DICT
-        self.buffer = {}
+        self.buffer = {} # [ready_to_resend_pkt, expiration_time, acked]
 
         # the seq num to send the next packet with
         self.next_seq_num = 0
@@ -43,6 +43,8 @@ class wildcat_sender(threading.Thread):
             with self.lock:
                 if len(self.buffer) < self.window_size: # if window is not full, (using the length of the buffer dict as the source of truth)
                     
+                    # assemble packet as a bytearray with our next sequence number and checksum
+                    
                     pkt = bytearray() # empty bytearray to assemble the packet into
                     
                     seq_num = self.next_seq_num 
@@ -55,10 +57,14 @@ class wildcat_sender(threading.Thread):
 
                     pkt += checksum_in_pkt 
 
-                    # packet is assembled as a bytearray atp
 
-                    # store this packet in the buffer for potential retransmission and ack receival tracking
-                    self.buffer[seq_num] = pkt 
+                    # set the expiration time to be 400ms after the current time to be stored in the window
+                    # this accounts for the fact that the run loop sleeps for 10ms on each run, and other slowdowns that might bring us closer to the 500ms retransmission deadline
+                    expiration_time = time.time() + 0.4
+                    acked = False # stored in order to know not to resend already acked packets sitting in the window
+
+                    # store this packet in the buffer alongside expiration and whether it has been acked
+                    self.buffer[seq_num] = [pkt, expiration_time, acked] 
                     
                     # SEND COPY OF THE PACKET THROUGH THE TUNNEL
                     # passed by reference into magic send which will corrupt the packet potentially 
@@ -92,12 +98,26 @@ class wildcat_sender(threading.Thread):
 
         # try and acquire the lock to potentially slide the window
         with self.lock:
-            pass # TODO
+            
 
     
     def run(self):
         while not self.die:
-            time.sleep(0.01)
+            with self.lock:
+                cur_time = time.time()
+
+                for seq_num, pkt_data in self.buffer.items():
+                    pkt = pkt_data[0]
+                    expiration = pkt_data[1]
+                    acked = pkt_data[2]
+
+                    # if nearing the 0.5 retransmission limit and not acked in the window
+                    if cur_time > expiration and not acked: 
+                        self.my_tunnel.magic_send(bytearray(pkt)) # resend a copy of the stored pkt
+                        new_expiration = cur_time + 0.4 # create a new retransmission expiration timestamp
+                        self.buffer[seq_num][1] = new_expiration # update expiration bookkeeping in window
+
+            time.sleep(0.01) # 10 ms
     
     def join(self):
         self.die = True
