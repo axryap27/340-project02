@@ -5,14 +5,8 @@ import time
 
 # NOTE: packet_byte_array is bytearray object
 
-# sender is going to need an array of packets in flight for the sliding window to occur, handling 
-# go back N with packets in flight
 
-
-# Sender maintains a sliding window of up to w unacknowledged packets.
-# Sender uses per-packet retransmission timers; any unacknowledged packet must be resent within 0.5 s of (last send or timeout).
-
-#checksum helper
+# checksum helper
 def checksum(data):
     return zlib.crc32(bytes(data)) & 0xFFFF
 
@@ -28,7 +22,7 @@ class wildcat_sender(threading.Thread):
         # lock for accesing the shared memory between the 3 threads
         self.lock = threading.Lock()
 
-        # packets in flight that aren't confirmed yet: DICT
+        # packets in flight that aren't confirmed yet: dictionary mapping seq_num -> packet data
         self.buffer = {} # [ready_to_resend_pkt, expiration_time, acked]
 
         # the seq num to send the next packet with
@@ -89,17 +83,42 @@ class wildcat_sender(threading.Thread):
         to_check = pkt[:-2]
         checksum_in_pkt = int.from_bytes(pkt[-2:], byteorder='big')
 
-        # checksum failure
+        # checksum failure check -> ignore the ack
         if checksum(to_check) != checksum_in_pkt:
-            # TODO: prolly log it
             return 
 
         bitmap = pkt[2:-2]
 
         # try and acquire the lock to potentially slide the window
         with self.lock:
-            
+            # with this ack, calculate how many packets we can slide the window forward by 
+            # note: accounting for wraparound,
+            to_slide = (window_start - self.first_unacked_seq_num) % 65536
 
+            # our slide can't be bigger than the window size, and the window size can't be before the first unacked seq num 
+            if to_slide > self.window_size: # due to modulo, both invalid cases covered with this check
+                return 
+
+            # else 
+            
+            # slide window forward, deleting packets from the sender buffer that are confirmed acked
+            for i in range(to_slide):
+                to_del_seq_num = (self.first_unacked_seq_num + i) % 65536
+                if to_del_seq_num in self.buffer:
+                    del self.buffer[to_del_seq_num]
+            
+            self.first_unacked_seq_num = window_start # update the first unacked seq num to the receiver window's new base
+
+            # if ack bitmap has new info for our packets in sender buffer, update them 
+
+            for i in range(self.window_size):
+                bitmap_byte = bitmap[i // 8]
+                bitmap_bit = (bitmap_byte >> (i % 8))
+                if 1 & bitmap_bit:
+                    cur_seq_num = (window_start + i) % 65536
+                    if cur_seq_num in self.buffer:
+                        self.buffer[cur_seq_num][2] = True
+            
     
     def run(self):
         while not self.die:
