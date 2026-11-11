@@ -23,6 +23,7 @@ class wildcat_receiver(threading.Thread):
         # needs a buffer to store and reassemble out of order packets
         self.buffer = {}
         self.base = 0
+        self.maxx = 65536
         
         # add as needed
 
@@ -43,17 +44,36 @@ class wildcat_receiver(threading.Thread):
         payload = body[2:]
         #some lock
         with self.lock():
-            offset = (seq - self.base) % (2 << 15)
+            offset = (seq - self.base) % self.maxx
             if offset < self.window_size:
-                if(seq not in self.buffer):
-                    self.buffer[seq] = payload
+                if seq not in self.buffer:
+                  self.buffer[seq] = payload
 
-                #
+            #in order commit/logging
+            while self.base in self.buffer:
+                payload = self.buffer.pop(self.base)
+                self.my_logger.commit(payload)
+                self.base+=1
+            
+            #ack packet building
+            window_start = bytearray([self.base >> 8, self.base & 0xFF])
+            bitmap = bytearray((self.window_size + 7) // 8)
+            #bitmapping, set to 1 if in received else 0
+            for i in range(0, self.window_size):
+                if (self.base+i)% self.maxx in self.buffer:
+                    bitmap[i] |= (i // 8) | 1 << (i % 8)
+            
+            ack_body = window_start + bitmap 
+            ack_checksum = checksum(ack_body)
+            ack = ack_body + bytearray([ack_checksum >> 8, ack_checksum & 0xFF])
 
-        #echo
-        print("Receiver gotten:", packet_byte_array)
-        # self.my_logger.commit(packet_byte_array)
-        self.my_tunnel.magic_send(packet_byte_array)
+
+        self.my_tunnel.magic_send(bytearray(ack))
+
+        # #echo
+        # print("Receiver gotten:", packet_byte_array)
+        # # self.my_logger.commit(packet_byte_array)
+        # self.my_tunnel.magic_send(packet_byte_array)
         
 
     def run(self):

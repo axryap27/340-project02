@@ -24,7 +24,9 @@ class wildcat_sender(threading.Thread):
         self.my_tunnel = my_tunnel
         self.my_logger = my_logger
         self.die = False
-        # add as needed
+        
+        # lock for accesing the shared memory between the 3 threads
+        self.lock = threading.Lock()
 
         # packets in flight that aren't confirmed yet: DICT
         self.buffer = {}
@@ -33,17 +35,65 @@ class wildcat_sender(threading.Thread):
         self.next_seq_num = 0
 
         # earliest unacked packet seq num
-        self.window_start = 0
-
-        # have to keep track of start of buffer 
-        # and next sequence number 
+        self.first_unacked_seq_num = 0
     
     def new_packet(self, packet_byte_array):
-        self.my_tunnel.magic_send(packet_byte_array)
+        # keep trying to send the packet and giving up the lock until there is space in the window
+        while not self.die:
+            with self.lock:
+                if len(self.buffer) < self.window_size: # if window is not full, (using the length of the buffer dict as the source of truth)
+                    
+                    pkt = bytearray() # empty bytearray to assemble the packet into
+                    
+                    seq_num = self.next_seq_num 
+
+                    pkt += seq_num.to_bytes(2, byteorder='big')
+
+                    pkt += packet_byte_array 
+
+                    checksum_in_pkt = checksum(pkt).to_bytes(2, byteorder='big')
+
+                    pkt += checksum_in_pkt 
+
+                    # packet is assembled as a bytearray atp
+
+                    # store this packet in the buffer for potential retransmission and ack receival tracking
+                    self.buffer[seq_num] = pkt 
+                    
+                    # SEND COPY OF THE PACKET THROUGH THE TUNNEL
+                    # passed by reference into magic send which will corrupt the packet potentially 
+                    # which would potentially corrupt the packet stored in our buffer dict
+                    self.my_tunnel.magic_send(bytearray(pkt))
+
+                    self.next_seq_num = (seq_num + 1) % 65536 # increment the seq num, wrapping around at uint16 max 
+
+                    return # break out of the loop
+            
+            time.sleep(0.1) # give receive function a chance to run and slide the window, and try again
+        
 
 
     def receive(self, packet_byte_array):
-        print(f"received: {packet_byte_array}")
+        pkt = packet_byte_array
+
+        if len(pkt) < 4: # too small of a packet for our indexing
+            return 
+
+        window_start = int.from_bytes(pkt[0:2], byteorder='big')
+        to_check = pkt[:-2]
+        checksum_in_pkt = int.from_bytes(pkt[-2:], byteorder='big')
+
+        # checksum failure
+        if checksum(to_check) != checksum_in_pkt:
+            # TODO: prolly log it
+            return 
+
+        bitmap = pkt[2:-2]
+
+        # try and acquire the lock to potentially slide the window
+        with self.lock:
+            pass # TODO
+
     
     def run(self):
         while not self.die:
