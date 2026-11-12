@@ -25,6 +25,13 @@ class wildcat_receiver(threading.Thread):
         self.buffer = {}
         self.base = 0
         self.maxx = 65536
+
+         # partial reliability (only used when allowed_loss > 0 or realtime modeling)
+        self.delivered = 0          #packets commited
+        self.skipped = 0            # holes given up on
+        self.blocked_since = None   # when the hole at base started blocking later packets
+        self.skip_after = 0.5       # seconds a hole may block before we skip it
+        self.realtime = False       # real-time mode: ignore the loss budget
         
 
     def receive(self, packet_byte_array):
@@ -64,13 +71,27 @@ class wildcat_receiver(threading.Thread):
     ##
 
     def deliver_in_order(self):
+        #bool used for resetting time, keeps track of if base has updated to next packet
+        progressed = False
         #checking while the base is in buffer, we pop and commit it
+        # ensures we wait and commit in order despite packets arriving out-of-order
         while self.base in self.buffer:
+            
             payload = self.buffer.pop(self.base)
             self.my_logger.commit(payload)
             #we increment and go onto the next base/payload
+            #also add one to delivered, need to keep track for partial reliability
+            self.delivered+=1
             self.base = (self.base + 1) % self.maxx
-        #this ensures we wait and commit in order despite packets arriving out-of-order
+            
+            #set progressed to true, use this for timeout reset
+            progressed = True
+        if not self.buffer:
+            self.blocked_since = None
+        # start the timer if we just reached a new hole, or this hole has no timer yet
+        elif progressed or self.blocked_since is None:
+            self.blocked_since = time.time()
+
 
     def build_ack(self):
         # build the ack from base + bitmap of buffered packets
@@ -89,10 +110,10 @@ class wildcat_receiver(threading.Thread):
         return ack_body + bytearray([ack_checksum >> 8, ack_checksum & 0xFF])
 
 
-    # for partial reliability??
+
+    #Answers has the hole at base waited long enough AND am I allowed to skip it
     def maybe_skip(self):
-        #TODO
-        pass
+        
 
 
     def run(self):
