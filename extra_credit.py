@@ -3,7 +3,6 @@
 # Simulation and Analysis of a "live" stream and its packet loss and network speed/reliability
 #
 
-import sys
 import time
 import test
 
@@ -13,12 +12,10 @@ DRAIN = 3                # seconds to wait after the last frame for resends
 DEADLINE = 0.2           # frames older than 200 ms are dropped (real-time simulation)
 
 
-def run_trial(alpha, w, loss, corruption, port):
+def run_trial(alpha, w, loss, corruption, port, realtime):
     #use test sender and receiver constructorers
     s = test.sender("localhost", port, alpha, w, loss, corruption, "log/exp")
-    r = test.receiver(alpha, w, loss, corruption, "log/exp")
-
-    #commit logs and magic send
+    r = test.receiver(port, alpha, w, loss, corruption, "log/exp")
 
     if realtime:
         s.my_wildcat_sender.deadline = DEADLINE
@@ -52,15 +49,11 @@ def run_trial(alpha, w, loss, corruption, port):
     ##
 
     n_frames = FPS * DURATION
-    start = time.time()
-
-    for frame_id in (n_frames):
+    for frame_id in range(n_frames):
         payload = f"{frame_id},{time.time()}".encode()
         s.send(payload)
         time.sleep(1/FPS)
-    elapsed = time.time() - start
     time.sleep(DRAIN)
-
     
     r.stop()
     s.stop()
@@ -71,19 +64,48 @@ def run_trial(alpha, w, loss, corruption, port):
     delivered_ids = set()
     latencies = []
     for payload, t_commit in commits:
+        #split the payload and convert bits into string, split by comma
         frame_id, t_sent = payload.decode().split(",")
+        
+        #cast int and float for decoded id and time_sent values since decode returns strings from bits
         delivered_ids.add(int(frame_id))
-        latencies.append((t_commit - float(t_sent)) * 1000)  #in milliseconds, we take the packet travel time and 
+        latencies.append((t_commit - float(t_sent)) * 1000)  # latency in ms: commit time - send time 
     
     latencies.sort()
+
+
+    #stat computation
+
+    #percent delivered out of total possible delivered
+    delivered = 100 * len(delivered_ids) / n_frames
+
+    #avg and p95 calculation with error handling for divide by zero
+    if latencies:
+        avg = sum(latencies) / len(latencies)
+        #p95 latency by taking 95th percentile index of the sorted latencies list
+        p95 = latencies[int(0.95 * len(latencies))]
+    else:
+        avg = p95 = 0
     
+    #retransmission rate: 
+        # total # of retransmitted frames calculated by subtracting total # of frames from total send count
+        # percentage calculated
+    ret_rate = 100 * (send_count[0] - n_frames) / n_frames
+    
+    return delivered, avg, p95, ret_rate
+
     
 
 
 if __name__ == "__main__":
-    port = 9000
-    #TODO
-
+    port = 6767
+    for realtime in [False, True]:
+        for alpha, loss in [(0, 5), (10, 10), (20, 20)]:
+            for w in [8, 32]:
+                st = run_trial(alpha, w, loss, 0, port, realtime)
+                port += 1
+                mode = "realtime" if realtime else "normal"
+                print("RESULT", mode, alpha, w, loss, st)
 
 
 
