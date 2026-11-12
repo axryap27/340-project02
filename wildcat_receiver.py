@@ -49,30 +49,55 @@ class wildcat_receiver(threading.Thread):
                 if seq not in self.buffer:
                   self.buffer[seq] = payload
 
-            #in order commit/logging
-            while self.base in self.buffer:
-                payload = self.buffer.pop(self.base)
-                self.my_logger.commit(payload)
-                self.base = (self.base + 1) % self.maxx
-            
-            #ack packet building
-            window_start = bytearray([self.base >> 8, self.base & 0xFF])
-            bitmap = bytearray((self.window_size + 7) // 8)
-            #bitmapping, set to 1 if in received else 0
-            for i in range(0, self.window_size):
-                if ((self.base+i) % self.maxx) in self.buffer:
-                    bitmap[i // 8] |= 1 << (i % 8)
-                                
-            ack_body = window_start + bitmap 
-            ack_checksum = checksum(ack_body)
-            ack = ack_body + bytearray([ack_checksum >> 8, ack_checksum & 0xFF])
+            # rebuild order from buffer via the base seq number
+            self.deliver_in_order()
+
+            # build the ack from the ordered payloads + bitmap
+            ack = self.build_ack()
+
+            # copy the ack by wrapping in bytearray in case of corrupted values since original packet is passed by reference
             self.my_tunnel.magic_send(bytearray(ack))
 
-        
+
+    ##
+    ## HELPERS
+    ##
+
+    def deliver_in_order(self):
+        #checking while the base is in buffer, we pop and commit it
+        while self.base in self.buffer:
+            payload = self.buffer.pop(self.base)
+            self.my_logger.commit(payload)
+            #we increment and go onto the next base/payload
+            self.base = (self.base + 1) % self.maxx
+        #this ensures we wait and commit in order despite packets arriving out-of-order
+
+    def build_ack(self):
+        # build the ack from base + bitmap of buffered packets
+        window_start = bytearray([self.base >> 8, self.base & 0xFF])
+
+        #ceiling calculation number of bytes for map size
+        bitmap = bytearray((self.window_size + 7) // 8)
+
+        #bitmapping, set to 1 if in received else 0
+        for i in range(0, self.window_size):
+            if ((self.base+i) % self.maxx) in self.buffer:
+                bitmap[i // 8] |= 1 << (i % 8)
+                            
+        ack_body = window_start + bitmap 
+        ack_checksum = checksum(ack_body)
+        return ack_body + bytearray([ack_checksum >> 8, ack_checksum & 0xFF])
+
+
+    # for partial reliability??
+    def maybe_skip(self):
+        #TODO
+        pass
+
 
     def run(self):
         while not self.die:
-            time.sleep(0.1)
+            time.sleep(0.01)
             
     def join(self):
         self.die = True

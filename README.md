@@ -31,15 +31,23 @@ Receiver Design
 State: base (next seq to deliver) and a buffer of seq -> payload for
 out-of-order arrivals
 
-- receive(MSG): verifies the checksum, then computes
-  offset = (seq - base) mod 2^16.
-    - offset < w: the packet is in the window and is buffered.
-    - Otherwise it is outside the window (an old duplicate or too far
-      ahead) and is dropped.
-  It then commits every contiguous packet starting at base, advancing
-  base (mod 2^16) after each one.
-- It sends an ACK for every packet that passes the checksum, including
-  dropped duplicates, so the sender recovers from lost ACKs.
+Overall design:
+- buffer -> an out of order dictionary mapping sequence numbers to payloads. This is for packets that arrived early and are waiting for the gap before them to be filled
+- base -> the "leftmost" sequence number in the receiver window, i.e. the next packet we need to commit in order. This is also the window_start we report back in every ACK
+- maxx -> 65536 (2^16), used with modulo everywhere so sequence numbers wrap around max uint16
+- delivered / skipped -> counters of how many packets we've committed vs. given up on, used for the partial reliability loss budget
+- blocked_since -> timestamp of when the hole at base started holding up later packets (None if nothing is blocked)
+- receive() and run() both touch base, buffer and the counters, so we always grab the lock before reading or updating them
+
+Functions:
+- receive(): We drop any packet shorter than 4 bytes or with a bad checksum, and let the sender's timer resend it. The seq number is the first 2 bytes, and the payload is everything between the seq and the checksum. We compute offset = (seq - base) % maxx, which is how far ahead of base the packet is, with wraparound handled. If the offset is less than the window size, we store the packet in the buffer. Otherwise it's an old duplicate or too far ahead, and we drop it. Either way, we then call deliver_in_order() and send an ACK, so the sender can recover if our last ACK was lost.
+
+- deliver_in_order(): While base is in the buffer, we pop it, commit it, and move base forward by one (mod maxx). Since we only ever commit the packet at base, a missing packet stops the loop and everything after it waits in the buffer. Afterwards, we set blocked_since to None if the buffer is empty, or to the current time if a new hole is now blocking later packets.
+
+- build_ack():
+    - Every 16-bit field (seq, window_start, checksum) is stored as two bytes, high byte first. We split a number with (n >> 8) and (n & 0xFF), and rebuild it with (high << 8) | low. The ACK bitmap uses one bit per window slot, so it's ceil(w/8) bytes long, in code this implemented by adding 7 to the window and floor division of 8
+    Bit i stands for seq (base + i) % 65536 and is 1 if that packet is in the receiver's buffer. Bit i is stored in byte i // 8 at position i % 8, counting from the least significant bit. The receiver sets it with bitmap[i // 8] |= 1 << (i % 8), and the sender checks it with (bitmap[i // 8] >> (i % 8)) & 1
+    
 
 
 Sender Design
@@ -80,4 +88,8 @@ Overall design:
 
     run(): looping while not self.die, trying to get ahold of the lock to get the current timestamp, iterate through all key value pairs in the send buffer dictionary, and if we find that the current timestamp is greater than the expiration time stored in the buffer, and the packet hasn't been acked yet as per the buffer -> we must resend it and update the bookkeeping with a new expiration timestamp, creating a per-packet retransmission timer
         Each loop run ends with a sleep for 10ms, to not be constantly fighting for the lock when there isn't much going on in run besides dispatching retransmissions 
+
+
+Extra Credit Design
+-------------
 
