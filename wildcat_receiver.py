@@ -72,7 +72,7 @@ class wildcat_receiver(threading.Thread):
 
     def run(self):
         while not self.die:
-            time.sleep(0.01)
+            time.sleep(0.1)
             
     def join(self):
         self.die = True
