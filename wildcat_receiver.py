@@ -113,11 +113,33 @@ class wildcat_receiver(threading.Thread):
 
     #Answers has the hole at base waited long enough AND am I allowed to skip it
     def maybe_skip(self):
-        
-
+        #need to take the lock since this is called in run() and is in a separate thread from receive()
+        with self.lock:
+            #nothing is blocking, we don't skip or
+            if self.blocked_since is None:
+                return
+            #something is blocked and the time since it has been block is less than half a second (limit for hold)
+            elif (time.time() - self.blocked_since) < self.skip_after:
+                return
+            #we cannot skip, if we do, the actual loss rate exceeds the "network's" set amount
+            if not self.realtime and (self.skipped+1)*100 > self.allowed_loss*(self.delivered+self.skipped+1):
+                return
+            # all conditions met to skip the packet, we add one to base and skipped total 
+            self.skipped+=1
+            self.base = (self.base + 1) % self.maxx
+            # now the base has moved, we need to deliver everything since we skipped that packet in the window
+            # we build the ack after packets are commmited in order from the buffer
+            self.deliver_in_order()
+            ack = self.build_ack()
+            #send the ack, making a copy to avoid corruption via pass-by-reference errors
+            self.my_tunnel.magic_send(bytearray(ack))
 
     def run(self):
         while not self.die:
+            #if there is an allowed loss OR we are simulating a realtime network
+            if self.allowed_loss > 0 or self.realtime:
+                #call function to determine if packets can be skipped
+                self.maybe_skip()
             time.sleep(0.01)
             
     def join(self):

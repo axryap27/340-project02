@@ -17,6 +17,7 @@ def run_trial(alpha, w, loss, corruption, port, realtime):
     s = test.sender("localhost", port, alpha, w, loss, corruption, "log/exp")
     r = test.receiver(port, alpha, w, loss, corruption, "log/exp")
 
+    #if we are doing realtime network simulation simulation, we create an articial deadline for both sides
     if realtime:
         s.my_wildcat_sender.deadline = DEADLINE
         r.my_wildcat_receiver.skip_after = DEADLINE
@@ -66,7 +67,7 @@ def run_trial(alpha, w, loss, corruption, port, realtime):
     for payload, t_commit in commits:
         #split the payload and convert bits into string, split by comma
         frame_id, t_sent = payload.decode().split(",")
-        
+
         #cast int and float for decoded id and time_sent values since decode returns strings from bits
         delivered_ids.add(int(frame_id))
         latencies.append((t_commit - float(t_sent)) * 1000)  # latency in ms: commit time - send time 
@@ -99,10 +100,15 @@ def run_trial(alpha, w, loss, corruption, port, realtime):
 
 if __name__ == "__main__":
     port = 6767
+    #overall we are doing 12 trials, 6 with realtime and 6 control with varying alpha, loss and window size
     for realtime in [False, True]:
+        #varying inputs for alpha and loss rate
         for alpha, loss in [(0, 5), (10, 10), (20, 20)]:
+            #8 byte and 32 byte window size trials
             for w in [8, 32]:
+                #returns statistics
                 st = run_trial(alpha, w, loss, 0, port, realtime)
+                #we change ports for each trial iteration
                 port += 1
                 mode = "realtime" if realtime else "normal"
                 print("RESULT", mode, alpha, w, loss, st)
