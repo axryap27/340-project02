@@ -30,6 +30,12 @@ class wildcat_sender(threading.Thread):
 
         # earliest unacked packet seq num
         self.first_unacked_seq_num = 0
+
+        # we set deadline to none if not realtime, extra_credit.py will overwrite to 0.2
+        self.deadline = None
+
+        #fallback for if a stale frame is still blocking the window after this long
+        self.resume_after = 1.0
     
     def new_packet(self, packet_byte_array):
         # keep trying to send the packet and giving up the lock until there is space in the window
@@ -58,7 +64,8 @@ class wildcat_sender(threading.Thread):
                     acked = False # stored in order to know not to resend already acked packets sitting in the window
 
                     # store this packet in the buffer alongside expiration and whether it has been acked
-                    self.buffer[seq_num] = [pkt, expiration_time, acked] 
+                    # we need the time it was added to the buffer for partial-reliability and realtime streaming simulation
+                    self.buffer[seq_num] = [pkt, expiration_time, acked, time.time()] 
                     
                     # SEND COPY OF THE PACKET THROUGH THE TUNNEL
                     # passed by reference into magic send which will corrupt the packet potentially 
@@ -131,6 +138,15 @@ class wildcat_sender(threading.Thread):
                     pkt = pkt_data[0]
                     expiration = pkt_data[1]
                     acked = pkt_data[2]
+                    first_sent = pkt_data[3]
+
+                    if self.deadline is not None:
+                        pkt_age = cur_time - first_sent
+                        # if it's the first frame in the window and has been stuck longer than resume_after, the receiver may have skipped it but its ACK was lost, so resend to get a fresh ACK
+                        stuck = (self.first_unacked_seq_num == seq_num and pkt_age > self.resume_after)
+                        #we don't retransmit if packet is too old and its not a stuck packet
+                        if pkt_age > self.deadline and not stuck:
+                            continue
 
                     # if nearing the 0.5 retransmission limit and not acked in the window
                     if cur_time > expiration and not acked: 
