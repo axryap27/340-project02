@@ -90,6 +90,47 @@ Overall design:
         Each loop run ends with a sleep for 10ms, to not be constantly fighting for the lock when there isn't much going on in run besides dispatching retransmissions 
 
 
-Extra Credit Design
+
+Extra Credit:
 -------------
 
+
+Results
+-------
+
+Settings: 20 fps for 15 seconds per trial (300 frames), 3 second drain, corruption = 0, loss rate roughly matched to alpha. Real-time mode uses a 200ms deadline. Each row is one run, so numbers vary a bit between runs since loss is random.
+
+* Each row is a single run, so the numbers will vary a bit between runs since loss is random *
+
+Mode      alpha  w   loss  delivered%  avg ms  p95 ms  retx%
+-------------------------------------------------------------
+normal      0    8    5      100.0      151     542     9.7
+normal      0   32    5      100.0      163     498    11.0
+normal     10    8   10       97.3      261     646    21.7
+normal     10   32   10       97.0      295     712    19.7
+normal     20    8   20       91.7      396     816    43.3
+normal     20   32   20       94.3      556     821    46.0
+realtime    0    8    5       89.3       64     250     0.0
+realtime    0   32    5       90.0       56     219     0.0
+realtime   10    8   10       82.7      100     269     1.0
+realtime   10   32   10       81.3      120     308     2.0
+realtime   20    8   20       59.3      249     482     1.7
+realtime   20   32   20       65.0      264     607     0.7
+
+
+
+Discussion
+----------
+
+normal mode: we delivered at least 100 - alpha percent of frames in every setting, but this reliability cost us a lot of latency
+        every lost frame holds up all the frames behind it until a retransmission arrives (at least 0.4s), so p95 latency sat between 0.5 and 0.8 seconds
+        the retransmission rate also climbed from about 10% to 45% as the loss rate went up
+
+real-time mode: flips the trade-off. Since we don't retransmit frames older than 200ms, average latency dropped to roughly 55-265ms and p95 stayed under about 0.6 seconds, with almost no retransmissions the only latency the cost is delivery, which fell to about 59-90% of frames
+
+window size: this made a smaller difference. In normal mode, w = 32 tended to have higher latency than w = 8, since more frames can pile up behind a single hole
+    Overall, for a live stream or game the real-time behavior is what we want, since a fresh frame now is better than a perfect frame a second late, while something like a file transfer should stay fully reliable
+
+Notes:
+  the effective loss rate is roughly double the configured rate, since every packet passes through both the sender's and the receiver's tunnel, and each one applies the loss rate. This is why real-time mode still drops about 10% of frames even at a configured 5% loss.
+  In real-time mode alpha doesn't limit skipping, since the deadline overrides the loss budget (a late frame is useless anyway), which is why the real-time alpha = 20 rows deliver below 80%
